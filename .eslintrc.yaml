@@ -1,0 +1,71 @@
+---
+root: true
+
+parser: babel-eslint
+
+plugins:
+  - prettier
+
+extends:
+  - prettier
+
+env:
+  es6: true
+  node: true
+
+parserOptions:
+  sourceType: script
+  ecmaVersion: 6
+
+rules:
+  prettier/prettier: error
+
+  import/no-commonjs: off
+
+  no-restricted-syntax:
+    - error
+    - ImportDeclaration
+    - ExportNamedDeclaration
+    - ExportDefaultDeclaration
+    - ExportAllDeclaration
+
+  block-scoped-var: error
+  consistent-return: off
+  dot-notation: [ error, { allowKeywords: true } ]
+  eqeqeq: [ error, allow-null ]
+  guard-for-in: error
+  new-cap: [ error, { capIsNewExceptions: [ Private ] } ]
+  no-bitwise: off
+  no-caller: error
+  no-cond-assign: off
+  no-const-assign: error
+  no-debugger: error
+  no-empty: error
+  no-eval: error
+  no-extend-native: error
+  no-extra-parens: off
+  no-global-assign: error
+  no-irregular-whitespace: error
+  no-iterator: error
+  no-nested-ternary: error
+  no-new: off
+  no-path-concat: off
+  no-proto: error
+  no-redeclare: error
+  no-restricted-globals: [ error, context ]
+  no-return-assign: off
+  no-script-url: error
+  no-sequences: error
+  no-shadow: off
+  no-undef: error
+  no-underscore-dangle: off
+  no-unused-expressions: off
+  no-unused-vars: [ error ]
+  no-use-before-define: [ error, nofunc ]
+  no-var: error
+  no-with: error
+  one-var: [ error, never ]
+  prefer-const: error
+  strict: [ error, never ]
+  valid-typeof: error
+  yoda: off
