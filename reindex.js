@@ -1,32 +1,17 @@
-const {
-  resolve,
-  extname,
-  sep: pathSep,
-  dirname,
-  basename,
-} = require('path')
+const { resolve } = require('path')
 
+const { Observable } = require('rxjs')
 const elasticsearch = require('elasticsearch')
-const { Repository } = require('nodegit')
 
-const { bulkWrite, setupIndex } = require('./lib')
+const { readCommits, setupIndex } = require('./lib')
+
+const REPO_DIR = resolve(process.env.REPO_DIR)
+const COMMIT_INDEX_NAME = 'commits'
+const CODE_INDEX_NAME = 'code'
+const TYPE_NAME = 'doc'
+const SECOND = 1000
 
 async function main() {
-  const REPO_DIR = resolve(process.env.REPO_DIR)
-  const GIT_DIFF_LINE_ADDITION = '+'.charCodeAt(0)
-  const COMMIT_INDEX_NAME = 'commits'
-  const CODE_INDEX_NAME = 'code'
-  const TYPE_NAME = 'doc'
-
-  const MINUTE = 60 * 1000
-  const HOUR = MINUTE * 60
-  const DAY = HOUR * 24
-  const WEEK = DAY * 7
-
-  let dateCursor = new Date()
-  const seenCommits = new Set()
-
-  const repo = await Repository.open(REPO_DIR)
   const client = new elasticsearch.Client({
     host: 'http://elastic:changeme@localhost:9200',
   })
@@ -99,86 +84,79 @@ async function main() {
     }),
   ])
 
-  const head = await repo.getBranchCommit('master')
-  const readQueue = [head]
-  const codeWriteQueue = []
-  const commitWriteQueue = []
-  while (readQueue.length) {
-    const commit = readQueue.shift()
-    const sha = commit.toString()
-    const date = commit.date()
+  const { commit$, code$ } = readCommits(REPO_DIR, 'master')
 
-    if (seenCommits.has(sha)) {
-      continue
-    } else {
-      seenCommits.add(sha)
-    }
+  const commitReqPair$ = commit$.map(commit => [
+    {
+      index: {
+        _index: COMMIT_INDEX_NAME,
+        _type: TYPE_NAME,
+        _id: commit.toString(),
+      },
+    },
+    { message: commit.message() },
+  ])
 
-    if (dateCursor.getTime() - date.getTime() > WEEK) {
-      dateCursor = date
-      console.log(dateCursor.toISOString())
-    }
+  const codeReqPair$ = code$.map(code => [
+    {
+      index: {
+        _index: CODE_INDEX_NAME,
+        _type: TYPE_NAME,
+        _id: code.path + ':' + code.commit,
+      },
+    },
+    code,
+  ])
 
-    const [diffs, parents] = await Promise.all([
-      commit.getDiff(),
-      commit.getParents(10),
-    ])
+  // convert pairs to strings so they are easier to count and I don't
+  // have to worry about if they get mixed up
+  const req$ = await Observable.merge(
+    commitReqPair$,
+    codeReqPair$,
+  ).map(
+    ([header, body]) =>
+      `${JSON.stringify(header)}\n${JSON.stringify(body)}\n`,
+  )
 
-    readQueue.push(...parents)
+  const finalReport = await req$
+    .bufferCount(300)
+    .mergeScan(
+      async (prev, reqs) => {
+        const resp = await client.bulk({
+          body: [...reqs, prev.failures].join(''),
+        })
 
-    for (const diff of diffs) {
-      const docsByPath = {}
+        if (resp.errors) {
+          console.log('')
+          console.log('')
+          console.log('RESPONSE ERRORS')
+          console.log(resp)
+          console.log('')
+          console.log('')
 
-      for (const patch of await diff.patches()) {
-        const path = patch.newFile().path()
-        const doc = docsByPath.hasOwnProperty(path)
-          ? docsByPath[path]
-          : {
-              path,
-              directories: dirname(path).split(pathSep),
-              filename: basename(path),
-              extension: extname(path),
-              commit: sha,
-              additions: '',
-            }
+          // delay next request a bit
+          await new Promise(resolve =>
+            setTimeout(resolve, 30 * SECOND),
+          )
 
-        for (const hunk of await patch.hunks()) {
-          for (const line of await hunk.lines()) {
-            if (line.origin() === GIT_DIFF_LINE_ADDITION) {
-              doc.additions += line.content()
-            }
+          return {
+            failures: reqs,
+            count: prev.count,
           }
         }
 
-        if (doc.additions) {
-          docsByPath[doc.path] = doc
+        return {
+          failures: [],
+          count: prev.count + reqs.length,
         }
-      }
-
-      for (const doc of Object.values(docsByPath)) {
-        codeWriteQueue.push(
-          { index: { _id: doc.path + ':' + doc.commit } },
-          doc,
-        )
-      }
-    }
-
-    commitWriteQueue.push(
-      { index: { _id: sha } },
-      { message: commit.message() },
+      },
+      { count: 0, failures: [] },
     )
+    .sampleTime(5 * SECOND)
+    .do(report => console.log('... %d', report.count))
+    .toPromise()
 
-    await Promise.all([
-      bulkWrite(
-        client,
-        commitWriteQueue,
-        COMMIT_INDEX_NAME,
-        TYPE_NAME,
-      ),
-
-      bulkWrite(client, codeWriteQueue, CODE_INDEX_NAME, TYPE_NAME),
-    ])
-  }
+  console.log('DONE: %d items indexed', finalReport.count)
 }
 
 main().catch(error => {
