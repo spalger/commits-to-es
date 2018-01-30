@@ -24,6 +24,7 @@ async function main() {
   const WEEK = DAY * 7
 
   let dateCursor = new Date()
+  const seenCommits = new Set()
 
   const repo = await Repository.open(REPO_DIR)
   const client = new elasticsearch.Client({
@@ -106,6 +107,12 @@ async function main() {
     const commit = readQueue.shift()
     const sha = commit.toString()
     const date = commit.date()
+
+    if (seenCommits.has(sha)) {
+      continue
+    } else {
+      seenCommits.add(sha)
+    }
 
     if (dateCursor.getTime() - date.getTime() > WEEK) {
       dateCursor = date
