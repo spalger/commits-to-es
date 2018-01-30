@@ -118,7 +118,7 @@ async function main() {
       `${JSON.stringify(header)}\n${JSON.stringify(body)}\n`,
   )
 
-  const finalReport = await req$
+  const sentCount$ = req$
     .bufferCount(300)
     .mergeScan(
       async (prev, reqs) => {
@@ -126,37 +126,44 @@ async function main() {
           body: [...reqs, prev.failures].join(''),
         })
 
-        if (resp.errors) {
-          console.log('')
-          console.log('')
-          console.log('RESPONSE ERRORS')
-          console.log(resp)
-          console.log('')
-          console.log('')
-
-          // delay next request a bit
-          await new Promise(resolve =>
-            setTimeout(resolve, 30 * SECOND),
-          )
-
+        if (!resp.errors) {
           return {
-            failures: reqs,
-            count: prev.count,
+            failures: [],
+            count: prev.count + reqs.length,
           }
         }
 
+        console.log('')
+        console.log('')
+        console.log('RESPONSE ERRORS')
+        console.log(resp)
+        console.log('')
+        console.log('')
+
+        // delay next request a bit
+        await new Promise(resolve => setTimeout(resolve, 30 * SECOND))
         return {
-          failures: [],
-          count: prev.count + reqs.length,
+          failures: reqs,
+          count: prev.count,
         }
       },
       { count: 0, failures: [] },
+      1,
     )
-    .sampleTime(5 * SECOND)
-    .do(report => console.log('... %d', report.count))
-    .toPromise()
+    .map(report => report.count)
+    .share()
 
-  console.log('DONE: %d items indexed', finalReport.count)
+  await Observable.merge(
+    // progress
+    sentCount$
+      .sampleTime(5 * SECOND)
+      .do(c => console.log('... %d', c)),
+
+    // final
+    sentCount$
+      .max()
+      .do(c => console.log('DONE: %d items indexed', c)),
+  ).toPromise()
 }
 
 main().catch(error => {
