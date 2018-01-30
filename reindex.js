@@ -9,11 +9,14 @@ const {
 const elasticsearch = require('elasticsearch')
 const { Repository } = require('nodegit')
 
+const { bulkWrite, setupIndex } = require('./lib')
+
 async function main() {
   const REPO_DIR = resolve(process.env.REPO_DIR)
   const GIT_DIFF_LINE_ADDITION = '+'.charCodeAt(0)
-  const INDEX_NAME = 'commits'
-  const TYPE_NAME = 'docs'
+  const COMMIT_INDEX_NAME = 'commits'
+  const CODE_INDEX_NAME = 'code'
+  const TYPE_NAME = 'doc'
 
   const MINUTE = 60 * 1000
   const HOUR = MINUTE * 60
@@ -27,16 +30,13 @@ async function main() {
     host: 'http://elastic:changeme@localhost:9200',
   })
 
-  console.log(`recreating the ${INDEX_NAME} index`)
-  await client.indices.delete({ index: INDEX_NAME, ignore: [404] })
-  await client.indices.create({
-    index: INDEX_NAME,
-    body: {
+  await Promise.all([
+    setupIndex(client, CODE_INDEX_NAME, {
       settings: {
         index: {
           number_of_shards: 1,
           number_of_replicas: 0,
-          refresh_interval: '30s',
+          refresh_interval: '15s',
           highlight: {
             max_analyzed_offset: 100000000,
           },
@@ -77,12 +77,31 @@ async function main() {
           },
         },
       },
-    },
-  })
+    }),
+    setupIndex(client, COMMIT_INDEX_NAME, {
+      settings: {
+        index: {
+          number_of_shards: 1,
+          number_of_replicas: 0,
+          refresh_interval: '15s',
+        },
+      },
+      mappings: {
+        [TYPE_NAME]: {
+          properties: {
+            message: {
+              type: 'text',
+            },
+          },
+        },
+      },
+    }),
+  ])
 
   const head = await repo.getBranchCommit('master')
   const readQueue = [head]
-  const writeQueue = []
+  const codeWriteQueue = []
+  const commitWriteQueue = []
   while (readQueue.length) {
     const commit = readQueue.shift()
     const sha = commit.toString()
@@ -130,30 +149,28 @@ async function main() {
       }
 
       for (const doc of Object.values(docsByPath)) {
-        writeQueue.push(
+        codeWriteQueue.push(
           { index: { _id: doc.path + ':' + doc.commit } },
           doc,
         )
       }
     }
 
-    if (writeQueue.length >= 100) {
-      const body = writeQueue.splice(0)
-      const resp = await client.bulk({
-        index: INDEX_NAME,
-        type: TYPE_NAME,
-        body,
-      })
+    commitWriteQueue.push(
+      { index: { _id: sha } },
+      { message: commit.message() },
+    )
 
-      if (resp.errors) {
-        console.log('')
-        console.log('')
-        console.log('RESPONSE ERRORS:', resp)
-        console.log('')
-        console.log('')
-        writeQueue.push(...body)
-      }
-    }
+    await Promise.all([
+      bulkWrite(
+        client,
+        commitWriteQueue,
+        COMMIT_INDEX_NAME,
+        TYPE_NAME,
+      ),
+
+      bulkWrite(client, codeWriteQueue, CODE_INDEX_NAME, TYPE_NAME),
+    ])
   }
 }
 
